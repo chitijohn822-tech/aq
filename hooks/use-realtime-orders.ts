@@ -26,7 +26,6 @@ export function useRealtimeOrders(storeId: string | null): UseRealtimeOrdersRetu
   const [error, setError] = useState<string | null>(null)
   const [pendingOrderForPopup, setPendingOrderForPopup] = useState<FirestoreOrder | null>(null)
   const [dismissedOrderIds, setDismissedOrderIds] = useState<Set<string>>(new Set())
-  const [previousPendingIds, setPreviousPendingIds] = useState<Set<string>>(new Set())
 
   // Convert Firestore timestamp to Date
   const convertTimestamp = (timestamp: unknown): Date => {
@@ -118,6 +117,7 @@ export function useRealtimeOrders(storeId: string | null): UseRealtimeOrdersRetu
     const unsubscribe = onSnapshot(
       ordersQuery,
       (snapshot) => {
+        // Process all current documents for state update
         const orders: FirestoreOrder[] = snapshot.docs.map((doc) => {
           const data = doc.data()
           return {
@@ -137,19 +137,36 @@ export function useRealtimeOrders(storeId: string | null): UseRealtimeOrdersRetu
 
         const pending = orders.filter(o => o.status === "pending")
         const accepted = orders.filter(o => o.status === "accepted")
-        
-        // Check for new pending orders (not previously seen and not dismissed)
-        const currentPendingIds = new Set(pending.map(o => o.id))
-        const newPendingOrders = pending.filter(
-          o => !previousPendingIds.has(o.id) && !dismissedOrderIds.has(o.id)
-        )
-        
-        // Show popup for the newest pending order
-        if (newPendingOrders.length > 0 && !pendingOrderForPopup) {
-          setPendingOrderForPopup(newPendingOrders[0])
-        }
-        
-        setPreviousPendingIds(currentPendingIds)
+
+        // Detect NEWLY ADDED pending orders using docChanges
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === "added") {
+            const data = change.doc.data()
+
+            // Only trigger popup for new pending orders
+            if (data.status === "pending") {
+              const newOrder: FirestoreOrder = {
+                id: change.doc.id,
+                orderId: data.orderId || change.doc.id.slice(-5).toUpperCase(),
+                userName: data.userName || "Customer",
+                destinationAddress: data.destinationAddress || "",
+                items: data.items || [],
+                subtotal: data.subtotal || 0,
+                deliveryFee: data.deliveryFee || 0,
+                total: data.total || 0,
+                status: data.status,
+                storeId: data.storeId,
+                createdAt: convertTimestamp(data.createdAt),
+              }
+
+              // Show popup if not dismissed and no popup is currently showing
+              if (!dismissedOrderIds.has(newOrder.id) && !pendingOrderForPopup) {
+                setPendingOrderForPopup(newOrder)
+              }
+            }
+          }
+        })
+
         setPendingOrders(pending)
         setAcceptedOrders(accepted)
         setAllOrders(orders)
@@ -163,7 +180,7 @@ export function useRealtimeOrders(storeId: string | null): UseRealtimeOrdersRetu
     )
 
     return () => unsubscribe()
-  }, [storeId, dismissedOrderIds, pendingOrderForPopup, previousPendingIds])
+  }, [storeId, dismissedOrderIds, pendingOrderForPopup])
 
   // Compute derived values
   const todayOrders = getTodayOrders(allOrders)
